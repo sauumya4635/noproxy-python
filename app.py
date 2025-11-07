@@ -1,8 +1,8 @@
-from flask import Flask, request, jsonify, render_template
 import os
-from datetime import datetime
-import mysql.connector
 import csv
+import mysql.connector
+from datetime import datetime
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 from encode_images import encode_all_faces
 from recognize import recognize_faces
@@ -11,7 +11,7 @@ from recognize import recognize_faces
 # Flask Initialization
 # ===============================
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})  # Allow all for local testing
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 # ===============================
 # Folder Setup
@@ -25,18 +25,18 @@ os.makedirs(STUDENT_FOLDER, exist_ok=True)
 os.makedirs("data", exist_ok=True)
 
 # ===============================
-# Database Connection Helper
+# Database Connection
 # ===============================
 def get_db_connection():
     return mysql.connector.connect(
         host="localhost",
         user="root",
-        password="cpgisHD@21",   # your MySQL password
+        password="cpgisHD@21",  # update if needed
         database="noproxy"
     )
 
 # ===============================
-# Initialize attendance CSV
+# Initialize attendance CSV (backup)
 # ===============================
 if not os.path.exists(ATTENDANCE_FILE):
     with open(ATTENDANCE_FILE, "w", newline="") as f:
@@ -44,14 +44,14 @@ if not os.path.exists(ATTENDANCE_FILE):
         writer.writerow(["Name", "Timestamp"])
 
 # ===============================
-# 🏠 Home Page (optional)
+# 🏠 Home
 # ===============================
 @app.route("/")
 def home():
     return jsonify({"message": "Flask backend running!", "port": 5500})
 
 # ===============================
-# 👤 Register a new student
+# 👤 Register new student (photo upload)
 # ===============================
 @app.route("/register", methods=["POST"])
 def register_student():
@@ -66,10 +66,9 @@ def register_student():
     save_path = os.path.join(STUDENT_FOLDER, filename)
     file.save(save_path)
 
-    # ✅ Extract student name (remove extension)
     student_name = os.path.splitext(filename)[0]
 
-    # ✅ Update the image_path in MySQL for that student
+    # ✅ Update student’s image_path in users table
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -83,7 +82,7 @@ def register_student():
     except Exception as e:
         print("MySQL update error:", e)
 
-    # ✅ Encode all known faces again
+    # ✅ Encode student’s face
     try:
         encode_all_faces()
     except Exception as e:
@@ -95,7 +94,7 @@ def register_student():
     })
 
 # ===============================
-# 🧠 Recognize faces and mark attendance
+# 🧠 Recognize faces → Save attendance properly
 # ===============================
 @app.route("/recognize", methods=["POST"])
 def recognize_class():
@@ -106,34 +105,45 @@ def recognize_class():
     if file.filename == "":
         return jsonify({"error": "No file selected"}), 400
 
+    lecture_name = request.form.get("session", "Default Lecture")
+    marked_by = request.form.get("marked_by", None)  # Optional faculty ID
+
     save_path = os.path.join(UPLOAD_FOLDER, file.filename)
     file.save(save_path)
 
-    # ✅ Recognize faces from uploaded image
     recognized_files = recognize_faces(save_path)
     recognized_names = []
 
-    # ✅ Match filenames with real names from MySQL
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
 
         for file_name in recognized_files:
             name_no_ext = os.path.splitext(file_name)[0]
-            cursor.execute("SELECT name FROM users WHERE name = %s", (name_no_ext,))
+
+            cursor.execute("SELECT id, name FROM users WHERE name = %s", (name_no_ext,))
             result = cursor.fetchone()
+
             if result:
-                recognized_names.append(result[0])
+                user_id, real_name = result
+                recognized_names.append(real_name)
+
+                # ✅ Insert attendance record properly
+                cursor.execute("""
+                    INSERT INTO attendance_records (date, lecture_name, status, user_id, marked_by)
+                    VALUES (CURDATE(), %s, 'PRESENT', %s, %s)
+                """, (lecture_name, user_id, marked_by))
+                conn.commit()
             elif name_no_ext.lower() != "unknown":
                 recognized_names.append(name_no_ext)
 
         cursor.close()
         conn.close()
     except Exception as e:
-        print("MySQL lookup error:", e)
+        print("MySQL insert error:", e)
         recognized_names = recognized_files
 
-    # ✅ Write attendance to CSV
+    # ✅ Optional CSV backup
     with open(ATTENDANCE_FILE, "a", newline="") as f:
         writer = csv.writer(f)
         for name in recognized_names:
@@ -149,14 +159,43 @@ def recognize_class():
     })
 
 # ===============================
-# 🧩 Ping Route (for testing)
+# 📋 Get student attendance (by user_id)
+# ===============================
+@app.route("/attendance/<int:user_id>", methods=["GET"])
+def get_attendance(user_id):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT date, lecture_name, status
+            FROM attendance_records
+            WHERE user_id = %s
+            ORDER BY date DESC
+        """, (user_id,))
+        records = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        data = [{"date": str(r[0]), "lecture_name": r[1], "status": r[2]} for r in records]
+
+        return jsonify({
+            "user_id": user_id,
+            "count": len(data),
+            "attendance": data
+        })
+    except Exception as e:
+        print("MySQL fetch error:", e)
+        return jsonify({"error": str(e)}), 500
+
+# ===============================
+# 🧩 Ping
 # ===============================
 @app.route("/ping", methods=["GET"])
 def ping():
     return jsonify({"status": "Python backend running!", "port": 5500})
 
 # ===============================
-# 🚀 Run Flask Server
+# 🚀 Run Server
 # ===============================
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5500, debug=True)
