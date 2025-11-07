@@ -1,47 +1,43 @@
-import os
 import face_recognition
-import numpy as np
 import cv2
+import numpy as np
+import pickle
 
-ENCODINGS_DIR = "encodings"
-UPLOADS_DIR = "uploads"
-
-def load_known_faces():
-    known_encodings = []
-    known_names = []
-    for filename in os.listdir(ENCODINGS_DIR):
-        if filename.endswith(".npy"):
-            name = os.path.splitext(filename)[0]
-            encoding = np.load(os.path.join(ENCODINGS_DIR, filename))
-            known_encodings.append(encoding)
-            known_names.append(name)
-    return known_encodings, known_names
+ENCODINGS_FILE = "data/encodings.pkl"
 
 def recognize_faces(image_path):
-    known_encodings, known_names = load_known_faces()
+    print("Recognizing faces in:", image_path)
+    try:
+        with open(ENCODINGS_FILE, "rb") as f:
+            data = pickle.load(f)
+    except FileNotFoundError:
+        print("⚠️ No encodings found. Please run encode_all_faces() first.")
+        return []
 
-    image = face_recognition.load_image_file(image_path)
-    face_locations = face_recognition.face_locations(image)
-    face_encodings = face_recognition.face_encodings(image, face_locations)
+    known_encodings = data["encodings"]
+    known_names = data["names"]
 
-    recognized = []
+    img = cv2.imread(image_path)
+    rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+    face_locations = face_recognition.face_locations(rgb_img)
+    face_encodings = face_recognition.face_encodings(rgb_img, face_locations)
+
+    recognized_names = []
 
     for face_encoding in face_encodings:
-        matches = face_recognition.compare_faces(known_encodings, face_encoding, tolerance=0.45)
-        name = "Unknown"
+        matches = face_recognition.compare_faces(known_encodings, face_encoding, tolerance=0.5)
+        face_distances = face_recognition.face_distance(known_encodings, face_encoding)
 
-        if True in matches:
-            match_index = matches.index(True)
-            name = known_names[match_index]
+        if len(face_distances) > 0:
+            best_match_index = np.argmin(face_distances)
+            if matches[best_match_index]:
+                name = known_names[best_match_index]
+                recognized_names.append(name)
+            else:
+                recognized_names.append("Unknown")
+        else:
+            recognized_names.append("Unknown")
 
-        recognized.append(name)
-
-    return recognized
-
-if __name__ == "__main__":
-    for filename in os.listdir(UPLOADS_DIR):
-        if filename.lower().endswith(('.jpg', '.png', '.jpeg')):
-            image_path = os.path.join(UPLOADS_DIR, filename)
-            print(f"\n📸 Checking {filename}...")
-            result = recognize_faces(image_path)
-            print("Recognized:", result)
+    print("✅ Recognized:", recognized_names)
+    return recognized_names
